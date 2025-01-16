@@ -1,42 +1,98 @@
 # Import necessary libraries
-import numpy as np
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Dense
-from tensorflow.keras.datasets import mnist
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+import matplotlib.pyplot as plt
+from sklearn.metrics import confusion_matrix
 
 # Step 1: Load and preprocess the MNIST dataset
-(train_images, train_labels), (test_images, test_labels) = mnist.load_data()
+transform = transforms.Compose([
+    transforms.ToTensor(),  # Convert PIL image to Tensor
+    transforms.Normalize((0.5,), (0.5,))  # Normalize to range [-1, 1]
+])
 
-# Normalize images to range [0, 1]
-train_images = train_images / 255.0
-test_images = test_images / 255.0
+# Load datasets
+train_dataset = datasets.MNIST(root='./data', train=True, transform=transform, download=True)
+test_dataset = datasets.MNIST(root='./data', train=False, transform=transform, download=True)
 
-# Flatten images into 1D arrays
-train_images = train_images.reshape(-1, 28 * 28)
-test_images = test_images.reshape(-1, 28 * 28)
+# DataLoader for batching
+batch_size = 32
+train_loader = DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+test_loader = DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
 
 # Step 2: Define the neural network architecture
-model = Sequential(
-    [
-        Dense(128, activation="relu", input_shape=(784,)),  # Hidden Layer
-        Dense(10, activation="softmax"),  # Output Layer
-    ]
-)
+class MNISTClassifier(nn.Module):
+    def __init__(self):
+        super(MNISTClassifier, self).__init__()
+        self.fc1 = nn.Linear(28 * 28, 128)  # Input to Hidden Layer
+        self.relu = nn.ReLU()              # Activation Function
+        self.fc2 = nn.Linear(128, 10)      # Hidden to Output Layer
+        self.softmax = nn.Softmax(dim=1)   # Output probabilities
 
-# Step 3: Compile the model
-model.compile(
-    optimizer="adam", loss="sparse_categorical_crossentropy", metrics=["accuracy"]
-)
+    def forward(self, x):
+        x = x.view(-1, 28 * 28)  # Flatten input
+        x = self.fc1(x)
+        x = self.relu(x)
+        x = self.fc2(x)
+        return x  # No softmax here, handled in loss function
+
+# Instantiate the model
+model = MNISTClassifier()
+
+# Step 3: Define the loss function and optimizer
+criterion = nn.CrossEntropyLoss()  # Combines Softmax and Cross-Entropy
+optimizer = optim.Adam(model.parameters(), lr=0.001)
 
 # Step 4: Train the model
-model.fit(train_images, train_labels, epochs=5, batch_size=32, validation_split=0.2)
+epochs = 5
+device = torch.device('cuda' if torch.cuda.is_available() else 'mps')
+model.to(device)
 
-# Step 5: Evaluate the model on the test dataset
-test_loss, test_accuracy = model.evaluate(test_images, test_labels, verbose=2)
-print(f"Test Loss: {test_loss}")
-print(f"Test Accuracy: {test_accuracy}")
+for epoch in range(epochs):
+    model.train()
+    total_loss = 0
+    for images, labels in train_loader:
+        images, labels = images.to(device), labels.to(device)
 
-# Step 6: Save the trained model (optional)
-model.save("mnist_classifier.h5")
-print("Model saved as 'mnist_classifier.h5'")
+        # Forward pass
+        outputs = model(images)
+        loss = criterion(outputs, labels)
+
+        # Backward pass and optimization
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        total_loss += loss.item()
+
+    print(f"Epoch {epoch + 1}/{epochs}, Loss: {total_loss / len(train_loader)}")
+
+# Step 5: Evaluate the model
+model.eval()
+correct = 0
+total = 0
+all_labels = []
+all_predictions = []
+
+with torch.no_grad():
+    for images, labels in test_loader:
+        images, labels = images.to(device), labels.to(device)
+
+        # Forward pass
+        outputs = model(images)
+        _, predicted = torch.max(outputs, 1)
+        total += labels.size(0)
+        correct += (predicted == labels).sum().item()
+
+        # Collect predictions for confusion matrix
+        all_labels.extend(labels.cpu().numpy())
+        all_predictions.extend(predicted.cpu().numpy())
+
+accuracy = correct / total
+print(f"Test Accuracy: {accuracy * 100:.2f}%")
+
+# Step 7: Save the trained model (optional)
+torch.save(model.state_dict(), 'mnist_classifier.pth')
+print("Model saved as 'mnist_classifier.pth'")

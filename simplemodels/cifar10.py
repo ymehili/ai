@@ -1,106 +1,110 @@
-import tensorflow as tf
-from tensorflow.keras.models import Sequential
-from tensorflow.keras.layers import Conv2D, MaxPooling2D, Flatten, Dense, Dropout
-from tensorflow.keras.preprocessing.image import ImageDataGenerator
+# Import libraries
+import torch
+import torch.nn as nn
+import torch.optim as optim
+import torchvision
+import torchvision.transforms as transforms
+from torch.utils.data import DataLoader
 import matplotlib.pyplot as plt
 import numpy as np
+from sklearn.metrics import confusion_matrix, ConfusionMatrixDisplay
+from tqdm import tqdm
 
-# Load CIFAR-10 dataset
-(x_train, y_train), (x_test, y_test) = tf.keras.datasets.cifar10.load_data()
+# Device configuration
+device = torch.device('cuda' if torch.cuda.is_available() else 'mps')
 
-# Normalize pixel values to [0, 1]
-x_train = x_train / 255.0
-x_test = x_test / 255.0
+if __name__ == '__main__':
+    # Data preprocessing and augmentation
+    transform_train = transforms.Compose([
+        transforms.RandomCrop(32, padding=4),  # Randomly crop images with padding
+        transforms.RandomHorizontalFlip(),    # Flip images horizontally
+        transforms.ToTensor(),                # Convert to tensor
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))  # Normalize RGB
+    ])
 
-# One-hot encode labels
-y_train = tf.keras.utils.to_categorical(y_train, 10)
-y_test = tf.keras.utils.to_categorical(y_test, 10)
+    transform_test = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.247, 0.243, 0.261))
+    ])
 
-# Data augmentation
-datagen = ImageDataGenerator(
-    rotation_range=15,
-    width_shift_range=0.1,
-    height_shift_range=0.1,
-    horizontal_flip=True
-)
-datagen.fit(x_train)
+    # Load CIFAR-10 dataset
+    train_dataset = torchvision.datasets.CIFAR10(root='./data', train=True, download=True, transform=transform_train)
+    test_dataset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
 
-# Define the CNN architecture
-model = Sequential([
-    # Convolutional Layer 1
-    Conv2D(32, (3, 3), activation='relu', input_shape=(32, 32, 3)),
-    MaxPooling2D((2, 2)),
+    # Data loaders
+    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=2)
+    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2)
 
-    # Convolutional Layer 2
-    Conv2D(64, (3, 3), activation='relu'),
-    MaxPooling2D((2, 2)),
+    # Class labels
+    classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 
-    # Flatten the output
-    Flatten(),
+    # Define the CNN model
+    class CNN(nn.Module):
+        def __init__(self):
+            super(CNN, self).__init__()
+            self.conv1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)  # 32 filters
+            self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)  # 64 filters
+            self.pool = nn.MaxPool2d(kernel_size=2, stride=2)  # Max pooling
+            self.fc1 = nn.Linear(64 * 8 * 8, 128)  # Fully connected layer
+            self.fc2 = nn.Linear(128, 10)  # Output layer
+            self.dropout = nn.Dropout(0.5)  # Dropout for regularization
 
-    # Fully Connected Layer
-    Dense(128, activation='relu'),
-    Dropout(0.5),  # Dropout for regularization
+        def forward(self, x):
+            x = torch.relu(self.conv1(x))  # Convolution + ReLU
+            x = self.pool(x)  # Pooling
+            x = torch.relu(self.conv2(x))  # Convolution + ReLU
+            x = self.pool(x)  # Pooling
+            x = x.view(-1, 64 * 8 * 8)  # Flatten
+            x = torch.relu(self.fc1(x))  # Fully connected + ReLU
+            x = self.dropout(x)  # Dropout
+            x = self.fc2(x)  # Output layer
+            return x
 
-    # Output Layer
-    Dense(10, activation='softmax')  # 10 classes
-])
+    # Instantiate and move the model to the device
+    model = CNN().to(device)
 
-# Compile the model
-model.compile(
-    optimizer='adam',  # Adam optimizer
-    loss='categorical_crossentropy',  # Cross-entropy loss for classification
-    metrics=['accuracy']  # Track accuracy
-)
+    # Define loss function and optimizer
+    criterion = nn.CrossEntropyLoss()  # Cross-entropy loss
+    optimizer = optim.Adam(model.parameters(), lr=0.001)  # Adam optimizer
 
-# Train the model
-history = model.fit(
-    datagen.flow(x_train, y_train, batch_size=64),  # Data generator with augmentation
-    epochs=20,  # Train for 20 epochs
-    validation_data=(x_test, y_test),  # Use test data for validation
-    verbose=2  # Print progress
-)
+    # Train the model
+    num_epochs = 20
 
-# Evaluate the model on test data
-test_loss, test_accuracy = model.evaluate(x_test, y_test, verbose=2)
-print(f"Test Loss: {test_loss:.4f}")
-print(f"Test Accuracy: {test_accuracy * 100:.2f}%")
+    for epoch in range(num_epochs):
+        model.train()
+        train_loader_tqdm = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch")
+        for images, labels in train_loader_tqdm:
+            images, labels = images.to(device), labels.to(device)
 
-# Plot training and validation accuracy
-plt.figure(figsize=(10, 5))
-plt.plot(history.history['accuracy'], label='Training Accuracy')
-plt.plot(history.history['val_accuracy'], label='Validation Accuracy')
-plt.title('Training and Validation Accuracy')
-plt.xlabel('Epochs')
-plt.ylabel('Accuracy')
-plt.legend()
-plt.show()
+            # Forward pass
+            outputs = model(images)
+            loss = criterion(outputs, labels)
 
-# Plot training and validation loss
-plt.figure(figsize=(10, 5))
-plt.plot(history.history['loss'], label='Training Loss')
-plt.plot(history.history['val_loss'], label='Validation Loss')
-plt.title('Training and Validation Loss')
-plt.xlabel('Epochs')
-plt.ylabel('Loss')
-plt.legend()
-plt.show()
+            # Backward pass and optimization
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-# Predict on test images
-predictions = model.predict(x_test)
+            train_loader_tqdm.set_postfix(loss=loss.item())
 
-# Visualize predictions
-class_names = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
-plt.figure(figsize=(12, 12))
-for i in range(16):  # Display 16 images
-    plt.subplot(4, 4, i + 1)
-    plt.xticks([])
-    plt.yticks([])
-    plt.grid(False)
-    plt.imshow(x_test[i])
-    predicted_label = class_names[np.argmax(predictions[i])]
-    true_label = class_names[np.argmax(y_test[i])]
-    color = 'green' if predicted_label == true_label else 'red'
-    plt.xlabel(f"Pred: {predicted_label}\nTrue: {true_label}", color=color)
-plt.tight_layout()
-plt.show()
+        print(f"Epoch [{epoch+1}/{num_epochs}]")
+
+    # Evaluate the model
+    model.eval()
+    correct = 0
+    total = 0
+    all_labels = []
+    all_preds = []
+
+    with torch.no_grad():
+        for images, labels in test_loader:
+            images, labels = images.to(device), labels.to(device)
+            outputs = model(images)
+            _, predicted = torch.max(outputs, 1)
+            total += labels.size(0)
+            correct += (predicted == labels).sum().item()
+            all_labels.extend(labels.cpu().numpy())
+            all_preds.extend(predicted.cpu().numpy())
+
+    test_accuracy = 100 * correct / total
+    print(f"Test Accuracy: {test_accuracy:.2f}%")
