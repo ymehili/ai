@@ -5,7 +5,6 @@ import torch.optim as optim
 import torchvision
 import torchvision.transforms as transforms
 from torch.utils.data import DataLoader
-from tqdm import tqdm
 
 # Device configuration
 device = torch.device('cuda' if torch.cuda.is_available() else 'mps')
@@ -29,32 +28,43 @@ if __name__ == '__main__':
     test_dataset = torchvision.datasets.CIFAR10(root='./data', train=False, download=True, transform=transform_test)
 
     # Data loaders
-    train_loader = DataLoader(train_dataset, batch_size=64, shuffle=True, num_workers=2)
-    test_loader = DataLoader(test_dataset, batch_size=64, shuffle=False, num_workers=2)
+    train_loader = DataLoader(train_dataset, batch_size=100, shuffle=True, num_workers=2, drop_last=True)
+    test_loader = DataLoader(test_dataset, batch_size=100, shuffle=False, num_workers=2)
 
     # Class labels
     classes = ['airplane', 'automobile', 'bird', 'cat', 'deer', 'dog', 'frog', 'horse', 'ship', 'truck']
 
-    # Define the CNN model
+    # Define the CNN architecture
     class CNN(nn.Module):
         def __init__(self):
             super(CNN, self).__init__()
-            self.conv1 = nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1)  # 32 filters
-            self.conv2 = nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1)  # 64 filters
-            self.pool = nn.MaxPool2d(kernel_size=2, stride=2)  # Max pooling
-            self.fc1 = nn.Linear(64 * 8 * 8, 128)  # Fully connected layer
-            self.fc2 = nn.Linear(128, 10)  # Output layer
-            self.dropout = nn.Dropout(0.5)  # Dropout for regularization
+            self.conv_layers = nn.Sequential(
+                nn.Conv2d(3, 32, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(32),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+
+                nn.Conv2d(32, 64, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(64),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+
+                nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1),
+                nn.BatchNorm2d(128),
+                nn.ReLU(),
+                nn.MaxPool2d(kernel_size=2, stride=2),
+            )
+            self.fc_layers = nn.Sequential(
+                nn.Flatten(),
+                nn.Linear(128 * 4 * 4, 1024),
+                nn.ReLU(),
+                nn.Dropout(0.5),
+                nn.Linear(1024, 10)
+            )
 
         def forward(self, x):
-            x = torch.relu(self.conv1(x))  # Convolution + ReLU
-            x = self.pool(x)  # Pooling
-            x = torch.relu(self.conv2(x))  # Convolution + ReLU
-            x = self.pool(x)  # Pooling
-            x = x.view(-1, 64 * 8 * 8)  # Flatten
-            x = torch.relu(self.fc1(x))  # Fully connected + ReLU
-            x = self.dropout(x)  # Dropout
-            x = self.fc2(x)  # Output layer
+            x = self.conv_layers(x)
+            x = self.fc_layers(x)
             return x
 
     # Instantiate and move the model to the device
@@ -62,15 +72,15 @@ if __name__ == '__main__':
 
     # Define loss function and optimizer
     criterion = nn.CrossEntropyLoss()  # Cross-entropy loss
-    optimizer = optim.Adam(model.parameters(), lr=0.001)  # Adam optimizer
+    optimizer = optim.Adam(model.parameters(), lr=0.0005, weight_decay=1e-4)  # Adam optimizer
+    scheduler = optim.lr_scheduler.StepLR(optimizer, step_size=15, gamma=0.1)
 
     # Train the model
-    num_epochs = 20
-
+    model.train()
+    num_epochs = 30
     for epoch in range(num_epochs):
-        model.train()
-        train_loader_tqdm = tqdm(train_loader, desc=f"Epoch {epoch+1}/{num_epochs}", unit="batch")
-        for images, labels in train_loader_tqdm:
+        total_batches = len(train_loader)
+        for batch_idx, (images, labels) in enumerate(train_loader):
             images, labels = images.to(device), labels.to(device)
 
             # Forward pass
@@ -82,9 +92,11 @@ if __name__ == '__main__':
             loss.backward()
             optimizer.step()
 
-            train_loader_tqdm.set_postfix(loss=loss.item())
-
-        print(f"Epoch [{epoch+1}/{num_epochs}]")
+            # Print batch progress
+            print(f"Epoch [{epoch+1}/{num_epochs}], "
+                  f"Batch [{batch_idx+1}/{total_batches}], "
+                  f"Loss: {loss.item():.4f}")
+        scheduler.step()
 
     # Evaluate the model
     model.eval()
