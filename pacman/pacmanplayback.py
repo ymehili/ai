@@ -1,99 +1,56 @@
 import gymnasium as gym
-from gymnasium.wrappers import AtariPreprocessing, FrameStackObservation
-import ale_py
-import numpy as np
 import torch
-import torch.nn as nn
-import torch.optim as optim
+import numpy as np
+from pacman import DuelingQNetwork, stack_frames, device, N_ATOM  # Import necessary classes and variables
+from gymnasium.wrappers import AtariPreprocessing
 import matplotlib.pyplot as plt
-from collections import deque
-import time
-import random
-import copy
-import os
 
-# ------------------------------
-# Determine device (CPU, CUDA, MPS)
-# ------------------------------
-device = torch.device("mps")  # or "cuda" if you have a GPU
-print(f"Using device: {device}")
 
-# ------------------------------
-# Q-Network CNN
-# ------------------------------
-class QNetworkCNN(nn.Module):
-    """
-    DQN-like CNN for an 84x84 grayscale input with 4-frame stacking.
-    """
-    def __init__(self, action_size):
-        super().__init__()
-        self.conv1 = nn.Conv2d(in_channels=4, out_channels=32, kernel_size=8, stride=4)
-        self.conv2 = nn.Conv2d(in_channels=32, out_channels=64, kernel_size=4, stride=2)
-        self.conv3 = nn.Conv2d(in_channels=64, out_channels=64, kernel_size=3, stride=1)
-
-        self.fc1 = nn.Linear(64 * 7 * 7, 512)
-        self.fc2 = nn.Linear(512, action_size)
-
-    def forward(self, x):
-        """
-        Expects x of shape (B, 4, 84, 84) in [0, 255].
-        """
-        # Scale input from [0, 255] to [0, 1]
-        if x.max() > 1.0:
-            x = x / 255.0
-
-        x = torch.relu(self.conv1(x))
-        x = torch.relu(self.conv2(x))
-        x = torch.relu(self.conv3(x))
-
-        x = x.view(x.size(0), -1)  # flatten
-        x = torch.relu(self.fc1(x))
-        x = self.fc2(x)
-
-        return x
-
-# ------------------------------
-# Epsilon-greedy Action Selection
-# ------------------------------
-def get_action(state, policy_net, epsilon, action_space):
-    if np.random.rand() < epsilon:
-        return action_space.sample()
-    else:
-        state_t = torch.tensor(state, dtype=torch.float32).unsqueeze(0).to(device)
-        q_values = policy_net(state_t)
-        return torch.argmax(q_values, dim=1).item()
-
-if __name__ == '__main__':
-    env_name = "ALE/MsPacman-v5"
-    load_path = "pacman_dqn_checkpoint.pth"
-
-    env = gym.make(env_name, render_mode="human", frameskip=1) # Set render_mode to "human"
+def test_agent(checkpoint_path, episodes=10):
+    env = gym.make("ALE/MsPacman-v5", render_mode="human", frameskip=1)
     env = AtariPreprocessing(env)
-    env = FrameStackObservation(env, stack_size=4)
+    n_actions = env.action_space.n
+    state_shape = (4, 84, 84)
 
-    action_size = env.action_space.n
+    agent = DuelingQNetwork(state_shape, n_actions, N_ATOM).to(device)
+    agent.load_state_dict(torch.load(checkpoint_path, map_location=device))
+    agent.eval()  # Set the agent to evaluation mode
 
-    policy_net = QNetworkCNN(action_size).to(device)
+    all_rewards = []
 
-    if os.path.exists(load_path):
-        checkpoint = torch.load(load_path, weights_only=False)
-        policy_net.load_state_dict(checkpoint['policy_net_state_dict'])
-        print(f"Loaded checkpoint from {load_path}")
-    else:
-        print(f"Error: Checkpoint file not found at {load_path}")
-        exit()
+    for episode in range(episodes):
+        state, info = env.reset()
+        stacked_frames, stacked_state = stack_frames(None, state, True)
+        total_reward = 0
+        done = False
 
-    state, _ = env.reset()
-    terminated = False
-    truncated = False
-    total_reward = 0
+        while not done:
+            # Choose action using the loaded agent
+            state_tensor = torch.from_numpy(stacked_state).float().unsqueeze(0).to(device)
+            with torch.no_grad():  # No need to calculate gradients during testing
+                q_values = agent.get_q_values(state_tensor)
+            action = np.argmax(q_values.cpu().data.numpy())
 
-    while not terminated and not truncated:
-        action = get_action(state, policy_net, 0.0, env.action_space) # Exploitation, epsilon=0
-        next_state, reward, terminated, truncated, info = env.step(action)
-        total_reward += reward
-        state = next_state
-        time.sleep(0.02) # Slow down rendering for better visualization
+            next_state, reward, terminated, truncated, _ = env.step(action)
+            done = terminated or truncated
+            stacked_frames, stacked_next_state = stack_frames(stacked_frames, next_state, False)
+            stacked_state = stacked_next_state
+            total_reward += reward
 
-    print(f"Total reward: {total_reward}")
+        all_rewards.append(total_reward)
+        print(f"Episode {episode + 1}: Total Reward: {total_reward}")
+
     env.close()
+    print(f"Average reward over {episodes} episodes: {np.mean(all_rewards)}")
+
+    # Plotting
+    plt.plot(all_rewards)
+    plt.xlabel("Episode")
+    plt.ylabel("Total Reward")
+    plt.title("Agent Performance over Episodes")
+    plt.show()
+
+
+if __name__ == "__main__":
+    checkpoint_file = "checkpoint_10.pth"  # Replace with the actual path to your checkpoint file
+    test_agent(checkpoint_file, episodes=10)
